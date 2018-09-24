@@ -1,0 +1,115 @@
+#!/usr/bin/env python3
+
+import sys, os, subprocess, shlex
+
+BINDIR = os.path.expanduser('~/.megaman/bin')
+PLASH_DATA = os.path.expanduser('~/.megaman/plashdata')
+
+
+def die(msg):
+    print('megaman died: {}'.format(msg), file=sys.stderr)
+    sys.exit(1)
+
+
+def success(msg):
+    print('', file=sys.stderr)
+    print('====', file=sys.stderr)
+    print('DONE: {}'.format(msg), file=sys.stderr)
+    sys.exit(0)
+
+
+def get_pkg_name_arg():
+    try:
+        arg = sys.argv[2]
+    except IndexError:
+        die('arg missing: package name')
+    if not arg.isalnum():
+        die('package name must me alphanumeric')
+    return arg
+
+
+try:
+    subcommand = sys.argv[1]
+except IndexError:
+    die('usage: megaman [ install PKG | remove PKG | list | sync | clean ]')
+
+found = False
+for path in os.environ.get('PATH', '').split(':'):
+    if path.endswith('/.megaman/bin'):
+        found = True
+        break
+if not found:
+    print('WARNING: megaman says put ~/.megaman/bin in your $PATH', file=sys.stderr)
+
+os.environ['PLASH_DATA'] = PLASH_DATA
+os.makedirs(BINDIR, exist_ok=True)
+subprocess.check_call(['plash', 'init'])
+
+if subcommand in ('ls', 'list', 'dir'):
+    for prog in os.listdir(BINDIR):
+        with open(os.path.join(BINDIR, prog), 'r') as f:
+            f.readline()
+            package_name, disk_usage = f.readline().split()[1:3]
+        print('{0} {2}'.format(prog.ljust(10), package_name, disk_usage))
+
+elif subcommand in ('remove', 'rm', 'del', 'uninstall'):
+    arg = get_pkg_name_arg()
+    binfile = os.path.join(BINDIR, arg)
+    if not os.path.exists(binfile):
+        print('megaman: no such program installed')
+        sys.exit(1)
+    subprocess.check_output(['plash', 'rm', '--from-map', arg])
+    os.unlink(binfile)
+
+elif subcommand in ('install', 'add', 'get'):
+    arg = get_pkg_name_arg()
+    cid = subprocess.check_output(['plash', 'map',
+                                   'pkgfile-update']).decode().rstrip('\n')
+    if not cid:
+        die('no index, run `megaman sync`')
+    try:
+        out = subprocess.check_output(
+            ['plash', 'run', cid, 'pkgfile', '-b', arg]).decode()
+    except subprocess.CalledProcessError:
+        die('command not found in index')
+
+    install_pkg = out.splitlines()[0]
+    install_to = os.path.join(BINDIR, arg)
+    cid = subprocess.check_output([
+        'plash', 'build', '-x', ': cache-with {}'.format(arg), '-R',
+        install_pkg, '-x', 'rm -rf /var/cache/pacman /var/lib/pacman'
+    ]).decode().rstrip('\n')
+
+    nodepath = subprocess.check_output(['plash', 'nodepath',
+                                        cid]).decode().rstrip('\n')
+    ncout = subprocess.check_output(['du', '-sh', nodepath]).decode()
+    disk_usage = ncout.split()[0]
+
+    subprocess.check_output(['plash', 'map', arg, cid])
+    with open(install_to, 'w') as f:
+        f.write(('#!/bin/sh\n'
+                 '# {} {}\n'
+                 'export PLASH_DATA={}\n'
+                 'exec plash run {} {} "$@"\n').format(install_pkg, disk_usage,
+                                                       shlex.quote(PLASH_DATA),
+                                                       shlex.quote(cid),
+                                                       shlex.quote(arg)))
+    os.chmod(install_to, 0o755)
+    success('installed {} (disk usage: {})'.format(arg, disk_usage))
+
+elif subcommand in ('fetch', 'pull', 'sync'):
+    cid = subprocess.check_output(['plash', 'map',
+                                   'pkgfile-update']).decode().rstrip('\n')
+    if cid:
+        subprocess.check_call(['plash', 'rm', cid])
+    cid = subprocess.check_output(
+        ['plash', 'build', '-R', 'pkgfile', '-lx',
+         'pkgfile -u']).decode().rstrip('\n')
+    subprocess.check_call(['plash', 'map', 'pkgfile-update', cid])
+    success('index up to date')
+
+elif subcommand in ('clean'):
+    os.execlp('plash', 'plash', 'clean')
+
+else:
+    die('no such subcommand')
