@@ -1,0 +1,9 @@
+
+
+
+bootstrap process:
+  Download and unpack arch linux in the root directory.
+  Install python3, unionfs-fuse and so on on top of it.
+
+
+
